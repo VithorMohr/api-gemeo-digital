@@ -21,7 +21,7 @@ async def analisar_processo(request: Request):
     dados_texto = payload.get("dados_brutos", "")
     
     try:
-        # 1. Converter e Formatar
+        # 1. Converter e Formatar (Mantemos o WODETCODE!)
         df = pd.read_csv(StringIO(dados_texto), sep='\t') 
         df = pm4py.format_dataframe(
             df, 
@@ -36,18 +36,27 @@ async def analisar_processo(request: Request):
         all_case_durations = pm4py.get_all_case_durations(df)
         tempo_medio = sum(all_case_durations) / len(all_case_durations) if all_case_durations else 0
         
-        # 3. Extrair o Grafo (Sem tentar desenhar a imagem)
+        # 3. Extrair as 3 partes do Grafo
         dfg, start_activities, end_activities = pm4py.discover_dfg(df)
         
-        # O DFG do PM4Py devolve um dicionário com tuplos como chaves: ('Atividade A', 'Atividade B'): Frequencia
-        # Precisamos de converter isto para texto legível para o JSON do n8n
-        caminhos_formatados = []
+        # Formatar as ligações entre máquinas
+        transicoes = []
         for (origem, destino), frequencia in dfg.items():
-            caminhos_formatados.append({
-                "de": origem,
-                "para": destino,
-                "quantidade_passagens": frequencia
+            transicoes.append({
+                "de": str(origem),
+                "para": str(destino),
+                "quantidade": frequencia
             })
+            
+        # Formatar as portas de entrada (onde os lotes começam)
+        inicios = []
+        for atividade, frequencia in start_activities.items():
+            inicios.append({"operacao": str(atividade), "quantidade": frequencia})
+            
+        # Formatar as portas de saída (onde os lotes terminam)
+        fins = []
+        for atividade, frequencia in end_activities.items():
+            fins.append({"operacao": str(atividade), "quantidade": frequencia})
         
         return {
             "status": "sucesso",
@@ -56,7 +65,11 @@ async def analisar_processo(request: Request):
                 "numero_variantes_processo": numero_variantes,
                 "tempo_medio_processamento_segundos": round(tempo_medio, 2)
             },
-            "mapa_de_fluxo": caminhos_formatados
+            "mapa_de_fluxo": {
+                "inicios": inicios,
+                "transicoes": transicoes,
+                "fins": fins
+            }
         }
         
     except Exception as e:
