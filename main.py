@@ -25,7 +25,7 @@ async def analisar_processo(request: Request):
     try:
         # 2. Converter o texto do PCFactory para uma tabela Pandas (DataFrame)
         # Assumindo que os dados vêm separados por tabulações ou espaços
-        df = pd.read_csv(StringIO(dados_texto), sep=r'\s+') 
+        df = pd.read_csv(StringIO(dados_texto), sep='\t') 
         
         # 3. Mapear as colunas do PCFactory para o padrão PM4Py
         # Ajuste os nomes das colunas de acordo com o seu log exato se necessário
