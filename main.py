@@ -48,9 +48,18 @@ async def analisar_processo(request: Request):
         # Juntar tudo para enviar ao n8n
         transicoes = []
         for (origem, destino), frequencia in dfg_freq.items():
-            # Tentar pegar o tempo médio dessa transição (se existir)
-            tempo_segundos = dfg_perf.get((origem, destino), 0)
-            tempo_horas = round(tempo_segundos / 3600, 2) # Converter para horas
+            
+            # Obter o dado bruto do tempo da transição
+            tempo_raw = dfg_perf.get((origem, destino), 0)
+            
+            # CORREÇÃO: Se o pm4py devolver um dicionário de estatísticas, extrair apenas o valor da média ('mean')
+            if isinstance(tempo_raw, dict):
+                tempo_segundos = tempo_raw.get('mean', 0)
+            else:
+                tempo_segundos = tempo_raw
+            
+            # Garantir que a variável é convertida para float antes da divisão matemática
+            tempo_horas = round(float(tempo_segundos) / 3600, 2) 
             
             transicoes.append({
                 "de": str(origem),
