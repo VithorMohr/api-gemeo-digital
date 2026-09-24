@@ -30,18 +30,15 @@ async def analisar_processo(request: Request):
     
     try:
 
-        # Lê os dados aceitando tanto Tabs quanto Espaços contínuos
-        df = pd.read_csv(StringIO(dados_texto), sep=r'\s+') 
+        # 1. Lê os dados usando o separador original de tabulação do Excel
+        df = pd.read_csv(StringIO(dados_texto), sep='\t') 
         
-        # 1. Converte a palavra literal "NULL" (caso venha do SQL) para um verdadeiro valor nulo do Pandas
+        # 2. Converte a palavra literal "NULL" para um valor nulo real e expulsa as linhas corrompidas
         df = df.replace('NULL', pd.NA)
-        
-        # 2. Expulsa sumariamente qualquer linha que não possua Lote, Atividade, Início ou Fim
         df = df.dropna(subset=[col_id, col_atividade, col_tempo_inicio, col_tempo_fim])
         
-        # 3. Garante que o Lote é tratado como texto (evita que lotes puramente numéricos quebrem o agrupamento)
+        # 3. Garante que o Lote é tratado como texto
         df[col_id] = df[col_id].astype(str)
-        
         # 1. TRATAMENTO PANDAS: Isolar o Tempo de Processamento Real (Fim - Início)
         df[col_tempo_inicio] = pd.to_datetime(df[col_tempo_inicio], errors='coerce')
         df[col_tempo_fim] = pd.to_datetime(df[col_tempo_fim], errors='coerce')
