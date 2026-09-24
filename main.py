@@ -20,62 +20,55 @@ async def analisar_processo(request: Request):
     payload = await request.json()
     dados_texto = payload.get("dados_brutos", "")
     
-    # Extrai as configurações de mapeamento enviadas pelo n8n
+    # Extrai as configurações enviadas pelo n8n, agora com a data final
     col_id = payload.get("coluna_id", "lotCode")
     col_atividade = payload.get("coluna_atividade", "WODETCODE")
-    col_tempo = payload.get("coluna_tempo", "RealDtStart")
+    col_tempo_inicio = payload.get("coluna_tempo", "RealDtStart")
+    col_tempo_fim = payload.get("coluna_tempo_fim", "RealDtEnd") 
     
     try:
         df = pd.read_csv(StringIO(dados_texto), sep='\t') 
-        df = pm4py.format_dataframe(
+        
+        # 1. TRATAMENTO PANDAS: Isolar o Tempo de Processamento Real (Fim - Início)
+        df[col_tempo_inicio] = pd.to_datetime(df[col_tempo_inicio], errors='coerce')
+        df[col_tempo_fim] = pd.to_datetime(df[col_tempo_fim], errors='coerce')
+        
+        df['tempo_proc_horas'] = (df[col_tempo_fim] - df[col_tempo_inicio]).dt.total_seconds() / 3600
+        # Cria um dicionário com o tempo médio de máquina trabalhando (exclui fila)
+        tempos_processamento = df.groupby(col_atividade)['tempo_proc_horas'].mean().round(2).to_dict()
+
+        # 2. TRATAMENTO PM4PY: Mapa de Fluxo e Filas (Start to Start)
+        df_pm4py = pm4py.format_dataframe(
             df, 
             case_id=col_id, 
             activity_key=col_atividade, 
-            timestamp_key=col_tempo
+            timestamp_key=col_tempo_inicio
         )
         
-        variantes = pm4py.get_variants(df)
-        numero_variantes = len(variantes)
-        all_case_durations = pm4py.get_all_case_durations(df)
-        tempo_medio = sum(all_case_durations) / len(all_case_durations) if all_case_durations else 0
+        dfg_freq, _, _ = pm4py.discover_dfg(df_pm4py)
+        dfg_perf, _, _ = pm4py.discover_performance_dfg(df_pm4py)
         
-        # 1. Grafo de Frequência (Quantidades)
-        dfg_freq, start_freq, end_freq = pm4py.discover_dfg(df)
-        
-        # 2. Grafo de Performance (Tempos em segundos)
-        dfg_perf, _, _ = pm4py.discover_performance_dfg(df)
-        
-        # Juntar tudo para enviar ao n8n
         transicoes = []
         for (origem, destino), frequencia in dfg_freq.items():
-            
-            # Obter o dado bruto do tempo da transição
             tempo_raw = dfg_perf.get((origem, destino), 0)
-            
-            # CORREÇÃO: Se o pm4py devolver um dicionário de estatísticas, extrair apenas o valor da média ('mean')
             if isinstance(tempo_raw, dict):
                 tempo_segundos = tempo_raw.get('mean', 0)
             else:
                 tempo_segundos = tempo_raw
             
-            # Garantir que a variável é convertida para float antes da divisão matemática
             tempo_horas = round(float(tempo_segundos) / 3600, 2) 
             
             transicoes.append({
                 "de": str(origem),
                 "para": str(destino),
                 "quantidade": frequencia,
-                "tempo_medio_horas": tempo_horas
+                "tempo_transicao_com_fila_horas": tempo_horas
             })
             
         return {
             "status": "sucesso",
-            "estatisticas": {
-                "total_eventos": len(df),
-                "numero_variantes": numero_variantes,
-                "tempo_medio_processamento_horas": round(tempo_medio / 3600, 2)
-            },
-            "mapa_de_fluxo": transicoes
+            "mapa_de_fluxo_transicoes": transicoes,
+            "tempos_reais_processamento_maquinas": tempos_processamento
         }
         
     except Exception as e:
@@ -90,26 +83,31 @@ async def simular_what_if(request: Request):
     dados_texto = payload.get("dados_brutos", "")
     parametros = payload.get("parametros", {})
     
-    # Extrai as variáveis geradas pelo Agente Extrator no n8n
     maquina_alvo = str(parametros.get("maquina_alvo", ""))
-    # Converte -30 (percentagem) para -0.30 (multiplicador matemático)
     modificador = float(parametros.get("modificador_percentual", 0)) / 100
 
     col_id = payload.get("coluna_id", "lotCode")
     col_atividade = payload.get("coluna_atividade", "WODETCODE")
-    col_tempo = payload.get("coluna_tempo", "RealDtStart")
+    col_tempo_inicio = payload.get("coluna_tempo", "RealDtStart")
+    col_tempo_fim = payload.get("coluna_tempo_fim", "RealDtEnd")
 
     try:
         df = pd.read_csv(StringIO(dados_texto), sep='\t') 
-        df = pm4py.format_dataframe(
+        
+        df[col_tempo_inicio] = pd.to_datetime(df[col_tempo_inicio], errors='coerce')
+        df[col_tempo_fim] = pd.to_datetime(df[col_tempo_fim], errors='coerce')
+        df['tempo_proc_horas'] = (df[col_tempo_fim] - df[col_tempo_inicio]).dt.total_seconds() / 3600
+        tempos_processamento_real = df.groupby(col_atividade)['tempo_proc_horas'].mean().round(2).to_dict()
+
+        df_pm4py = pm4py.format_dataframe(
             df, 
             case_id=col_id, 
             activity_key=col_atividade, 
-            timestamp_key=col_tempo
+            timestamp_key=col_tempo_inicio
         )
         
-        dfg_freq, _, _ = pm4py.discover_dfg(df)
-        dfg_perf, _, _ = pm4py.discover_performance_dfg(df)
+        dfg_freq, _, _ = pm4py.discover_dfg(df_pm4py)
+        dfg_perf, _, _ = pm4py.discover_performance_dfg(df_pm4py)
         
         cenario_real = []
         cenario_simulado = []
@@ -123,31 +121,31 @@ async def simular_what_if(request: Request):
                 
             tempo_horas_real = round(float(tempo_segundos) / 3600, 2)
             
-            # Lógica do Simulador: Se a etapa atual for a máquina alvo, aplica-se a redução/aumento de tempo
+            # Aqui no futuro entrará o SimPy. Por enquanto, mantemos a lógica matemática direta.
             tempo_horas_simulado = tempo_horas_real
             if str(origem) == maquina_alvo:
-                # Exemplo: 7.00 horas * (1 + (-0.30)) = 7.00 * 0.70 = 4.90 horas
                 tempo_horas_simulado = round(tempo_horas_real * (1 + modificador), 2)
             
             cenario_real.append({
                 "de": str(origem),
                 "para": str(destino),
                 "quantidade": frequencia,
-                "tempo_medio_horas": tempo_horas_real
+                "tempo_transicao_horas": tempo_horas_real
             })
             
             cenario_simulado.append({
                 "de": str(origem),
                 "para": str(destino),
                 "quantidade": frequencia,
-                "tempo_medio_horas": tempo_horas_simulado
+                "tempo_transicao_horas": tempo_horas_simulado
             })
             
         return {
             "status": "sucesso",
             "simulacao_aplicada": f"Tempo da etapa {maquina_alvo} alterado em {modificador*100}%",
-            "cenario_real": cenario_real,
-            "cenario_simulado": cenario_simulado
+            "tempos_reais_processamento_maquinas": tempos_processamento_real,
+            "cenario_real_transicoes": cenario_real,
+            "cenario_simulado_transicoes": cenario_simulado
         }
         
     except Exception as e:
