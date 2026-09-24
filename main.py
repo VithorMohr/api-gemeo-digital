@@ -114,7 +114,7 @@ async def simular_what_if(request: Request):
                 "quantidade_movimentacoes": frequencia
             })
 
-        # 4. SIMPY: Simulador de Filas
+      # 4. SIMPY: Simulador de Filas
         df_simpy = df.sort_values(by=[col_id, col_tempo_inicio])
         lotes_agrupados = df_simpy.groupby(col_id)
         
@@ -151,9 +151,21 @@ async def simular_what_if(request: Request):
                 
             env.run()
             
+            # NOVO CÁLCULO DE MÉDIA: Separa os lotes com fila dos lotes em fluxo livre
             resultado_filas = {}
             for m, filas in tempos_espera.items():
-                resultado_filas[m] = round(sum(filas)/len(filas), 2) if filas else 0
+                # Filtra apenas as esperas maiores que 3 minutos (0.05 horas) para ignorar micro-paradas
+                filas_reais = [f for f in filas if f > 0.05] 
+                qtd_total = len(filas)
+                qtd_fila = len(filas_reais)
+                
+                media_espera = sum(filas_reais) / qtd_fila if qtd_fila > 0 else 0
+                taxa_livre = ((qtd_total - qtd_fila) / qtd_total * 100) if qtd_total > 0 else 100
+                
+                resultado_filas[m] = {
+                    "espera_horas": round(media_espera, 2),
+                    "fluxo_livre_pct": round(taxa_livre, 1)
+                }
             return resultado_filas
 
         filas_cenario_real = rodar_fabrica_virtual(df, aplicar_modificador=False)
@@ -166,8 +178,10 @@ async def simular_what_if(request: Request):
             comparativo_filas.append({
                 "maquina": maq,
                 "tempo_processamento_unitario_horas": tempos_processamento_real.get(maq, 0),
-                "tempo_medio_fila_espera_antes_da_maquina_REAL_horas": filas_cenario_real.get(maq, 0),
-                "tempo_medio_fila_espera_antes_da_maquina_SIMULADO_horas": filas_cenario_simulado.get(maq, 0)
+                "tempo_medio_da_fila_REAL_horas": filas_cenario_real.get(maq, {}).get("espera_horas", 0),
+                "percentual_de_lotes_em_fluxo_livre_REAL": filas_cenario_real.get(maq, {}).get("fluxo_livre_pct", 100),
+                "tempo_medio_da_fila_SIMULADO_horas": filas_cenario_simulado.get(maq, {}).get("espera_horas", 0),
+                "percentual_de_lotes_em_fluxo_livre_SIMULADO": filas_cenario_simulado.get(maq, {}).get("fluxo_livre_pct", 100)
             })
 
         # 5. Retorno Consolidado
