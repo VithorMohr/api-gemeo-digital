@@ -29,7 +29,20 @@ async def analisar_processo(request: Request):
     col_tempo_fim = payload.get("coluna_tempo_fim", "RealDtEnd") 
     
     try:
-        df = pd.read_csv(StringIO(dados_texto), sep='\t') 
+        # Lê os dados aceitando tanto Tabs quanto Espaços contínuos
+        df = pd.read_csv(StringIO(dados_texto), sep=r'\s+') 
+        
+        # Lê os dados aceitando tanto Tabs quanto Espaços contínuos
+        df = pd.read_csv(StringIO(dados_texto), sep=r'\s+') 
+        
+        # 1. Converte a palavra literal "NULL" (caso venha do SQL) para um verdadeiro valor nulo do Pandas
+        df = df.replace('NULL', pd.NA)
+        
+        # 2. Expulsa sumariamente qualquer linha que não possua Lote, Atividade, Início ou Fim
+        df = df.dropna(subset=[col_id, col_atividade, col_tempo_inicio, col_tempo_fim])
+        
+        # 3. Garante que o Lote é tratado como texto (evita que lotes puramente numéricos quebrem o agrupamento)
+        df[col_id] = df[col_id].astype(str)
         
         # 1. TRATAMENTO PANDAS: Isolar o Tempo de Processamento Real (Fim - Início)
         df[col_tempo_inicio] = pd.to_datetime(df[col_tempo_inicio], errors='coerce')
