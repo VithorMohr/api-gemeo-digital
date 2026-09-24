@@ -27,50 +27,31 @@ async def analisar_processo(request: Request):
     col_tempo_fim = payload.get("coluna_tempo_fim", "RealDtEnd") 
     
     try:
-        # 1. Leitura Robusta: Ignora formatações erradas e limpa crases/espaços
         df = pd.read_csv(StringIO(dados_texto), sep=None, engine='python') 
         df.columns = df.columns.str.replace('`', '').str.strip()
         df = df.replace('NULL', pd.NA)
-        df = df.dropna(subset=[col_id, col_atividade, col_tempo_inicio, col_tempo_fim])
+        df = df.dropna(subset=[col_id, col_atividade, col_tempo_inicio, col_tempo_fim, 'RESOURCECODE'])
         
-        # 2. Forçar Tipagem para Texto
+        # [A SOLUÇÃO IDEAL]: Identidade Composta (Máquina + Operação) igual ao Angular
         df[col_id] = df[col_id].astype(str)
-        df[col_atividade] = df[col_atividade].astype(str)
+        df[col_atividade] = df['RESOURCECODE'].astype(str) + "_" + df[col_atividade].astype(str)
         
-        # 3. Tratamento de Datas e Achatador (Gaps & Islands) em Python
         df[col_tempo_inicio] = pd.to_datetime(df[col_tempo_inicio], errors='coerce')
         df[col_tempo_fim] = pd.to_datetime(df[col_tempo_fim], errors='coerce')
-        df = df.dropna(subset=[col_tempo_inicio, col_tempo_fim])
-        
-        # Ordenamos perfeitamente a cronologia
-        df = df.sort_values(by=[col_id, col_tempo_inicio])
-        
-        # Criamos uma "ilha" nova sempre que a Operação muda ou o Lote muda
-        mudou_operacao = df[col_atividade] != df[col_atividade].shift()
-        mudou_lote = df[col_id] != df[col_id].shift()
-        df['id_bloco_continuo'] = (mudou_operacao | mudou_lote).cumsum()
-        
-        # Fundimos os apontamentos que pertencem ao mesmo bloco
-        df = df.groupby([col_id, 'id_bloco_continuo', col_atividade], as_index=False).agg({
-            col_tempo_inicio: 'min',
-            col_tempo_fim: 'max'
-        })
-        
-        df = df.sort_values(by=[col_id, col_tempo_fim])
         df['tempo_proc_horas'] = (df[col_tempo_fim] - df[col_tempo_inicio]).dt.total_seconds() / 3600
-        
+        df = df.dropna(subset=['tempo_proc_horas'])
+
         tempos_processamento = df.groupby(col_atividade)['tempo_proc_horas'].mean().round(2).to_dict()
 
-        # 4. Process Mining: Mapa de Fluxo (Usando tempo_fim para evitar falsas sobreposições)
+        # O pm4py volta a usar o tempo_inicio, pois agora as máquinas estão separadas e a ordem cronológica funciona
         df_pm4py = pm4py.format_dataframe(
-            df, case_id=col_id, activity_key=col_atividade, timestamp_key=col_tempo_fim
+            df, case_id=col_id, activity_key=col_atividade, timestamp_key=col_tempo_inicio
         )
         dfg_freq, _, _ = pm4py.discover_dfg(df_pm4py)
         dfg_perf, _, _ = pm4py.discover_performance_dfg(df_pm4py)
         
         transicoes = []
         for (origem, destino), frequencia in dfg_freq.items():
-            # Ignora auto-loops (ex: 5 -> 5) gerados por eventuais micro-paradas dentro da mesma operação
             if origem == destino:
                 continue
                 
@@ -109,36 +90,20 @@ async def simular_what_if(request: Request):
     col_tempo_fim = payload.get("coluna_tempo_fim", "RealDtEnd")
 
     try:
-        # 1. Leitura Robusta
         df = pd.read_csv(StringIO(dados_texto), sep=None, engine='python') 
         df.columns = df.columns.str.replace('`', '').str.strip()
         df = df.replace('NULL', pd.NA)
-        df = df.dropna(subset=[col_id, col_atividade, col_tempo_inicio, col_tempo_fim])
+        df = df.dropna(subset=[col_id, col_atividade, col_tempo_inicio, col_tempo_fim, 'RESOURCECODE'])
         
         df[col_id] = df[col_id].astype(str)
-        df[col_atividade] = df[col_atividade].astype(str)
+        df[col_atividade] = df['RESOURCECODE'].astype(str) + "_" + df[col_atividade].astype(str)
         
-        # 2. Datas e Achatador (Gaps & Islands)
         df[col_tempo_inicio] = pd.to_datetime(df[col_tempo_inicio], errors='coerce')
         df[col_tempo_fim] = pd.to_datetime(df[col_tempo_fim], errors='coerce')
-        df = df.dropna(subset=[col_tempo_inicio, col_tempo_fim])
-        
-        df = df.sort_values(by=[col_id, col_tempo_inicio])
-        mudou_operacao = df[col_atividade] != df[col_atividade].shift()
-        mudou_lote = df[col_id] != df[col_id].shift()
-        df['id_bloco_continuo'] = (mudou_operacao | mudou_lote).cumsum()
-        
-        df = df.groupby([col_id, 'id_bloco_continuo', col_atividade], as_index=False).agg({
-            col_tempo_inicio: 'min',
-            col_tempo_fim: 'max'
-        })
-        
-        df = df.sort_values(by=[col_id, col_tempo_fim])
         df['tempo_proc_horas'] = (df[col_tempo_fim] - df[col_tempo_inicio]).dt.total_seconds() / 3600
         df = df.dropna(subset=['tempo_proc_horas', col_tempo_inicio])
         
-        # 3. Mapa de Transições para a IA (Usando tempo_fim para corrigir a ordem lógica)
-        df_pm4py = pm4py.format_dataframe(df, case_id=col_id, activity_key=col_atividade, timestamp_key=col_tempo_fim)
+        df_pm4py = pm4py.format_dataframe(df, case_id=col_id, activity_key=col_atividade, timestamp_key=col_tempo_inicio)
         dfg_freq, _, _ = pm4py.discover_dfg(df_pm4py)
         
         cenario_real_transicoes = []
@@ -151,11 +116,9 @@ async def simular_what_if(request: Request):
                 "quantidade_movimentacoes": frequencia
             })
 
-        # 4. SIMPY: Simulador de Filas
         df_simpy = df.sort_values(by=[col_id, col_tempo_inicio])
         lotes_agrupados = df_simpy.groupby(col_id)
         
-        # Inferir a capacidade real (paralelismo) de cada Operação
         capacidade_operacoes = {}
         for op in df[col_atividade].unique():
             df_op = df[df[col_atividade] == op]
@@ -177,7 +140,8 @@ async def simular_what_if(request: Request):
                     maquina = str(row[col_atividade])
                     tempo_proc = row['tempo_proc_horas']
                     
-                    if aplicar_modificador and maquina == maquina_alvo:
+                    # Adaptação para garantir que o modificador funciona com o nome composto (ex: se maquina_alvo for "5", afeta "MAQA_5" e "MAQB_5")
+                    if aplicar_modificador and maquina.endswith(f"_{maquina_alvo}"):
                         tempo_proc = tempo_proc * (1 + modificador)
                         
                     chegada = env.now
@@ -199,7 +163,6 @@ async def simular_what_if(request: Request):
                 
             env.run()
             
-            # CÁLCULO DE MÉDIA: Separa os lotes com fila dos lotes em fluxo livre
             resultado_filas = {}
             for m, filas in tempos_espera.items():
                 filas_reais = [f for f in filas if f > 0.05] 
@@ -231,10 +194,9 @@ async def simular_what_if(request: Request):
                 "percentual_de_lotes_em_fluxo_livre_SIMULADO": filas_cenario_simulado.get(maq, {}).get("fluxo_livre_pct", 100)
             })
 
-        # 5. Retorno Consolidado
         return {
             "status": "sucesso",
-            "simulacao_aplicada": f"Tempo de PROCESSAMENTO da máquina {maquina_alvo} alterado em {modificador*100}%",
+            "simulacao_aplicada": f"Tempo de PROCESSAMENTO da máquina alvo ({maquina_alvo}) alterado em {modificador*100}%",
             "mapa_de_transicoes_quantidades": cenario_real_transicoes,
             "impacto_nas_filas_e_gargalos": comparativo_filas
         }
