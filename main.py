@@ -29,9 +29,7 @@ async def analisar_processo(request: Request):
     col_tempo_fim = payload.get("coluna_tempo_fim", "RealDtEnd") 
     
     try:
-        # Lê os dados aceitando tanto Tabs quanto Espaços contínuos
-        df = pd.read_csv(StringIO(dados_texto), sep=r'\s+') 
-        
+
         # Lê os dados aceitando tanto Tabs quanto Espaços contínuos
         df = pd.read_csv(StringIO(dados_texto), sep=r'\s+') 
         
