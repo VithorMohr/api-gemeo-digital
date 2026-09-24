@@ -92,7 +92,9 @@ async def simular_what_if(request: Request):
         df.columns = df.columns.str.replace('`', '').str.strip()
         df = df.replace('NULL', pd.NA)
         df = df.dropna(subset=[col_id, col_atividade, col_tempo_inicio, col_tempo_fim])
+        
         df[col_id] = df[col_id].astype(str)
+        df[col_atividade] = df[col_atividade].astype(str)
         
         # 2. Datas e Processamento
         df[col_tempo_inicio] = pd.to_datetime(df[col_tempo_inicio], errors='coerce')
