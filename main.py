@@ -118,11 +118,26 @@ async def simular_what_if(request: Request):
         df_simpy = df.sort_values(by=[col_id, col_tempo_inicio])
         lotes_agrupados = df_simpy.groupby(col_id)
         
+        # [NOVO] ALGORITMO DA OPÇÃO 2: Inferir a capacidade real (paralelismo) de cada Operação
+        capacidade_operacoes = {}
+        for op in df[col_atividade].unique():
+            df_op = df[df[col_atividade] == op]
+            # Cria eventos de entrada (+1) e saída (-1) na máquina
+            entradas = pd.DataFrame({'tempo': df_op[col_tempo_inicio], 'mudanca': 1})
+            saidas = pd.DataFrame({'tempo': df_op[col_tempo_fim], 'mudanca': -1})
+            # Ordena no tempo. Se saída e entrada forem no mesmo segundo, a saída (-1) processa primeiro
+            eventos = pd.concat([entradas, saidas]).sort_values(by=['tempo', 'mudanca'])
+            # O pico máximo do somatório nos diz quantas peças chegaram a estar lá ao mesmo tempo
+            pico_simultaneo = eventos['mudanca'].cumsum().max()
+            capacidade_operacoes[op] = max(1, int(pico_simultaneo))
+        
         def rodar_fabrica_virtual(df_dados, aplicar_modificador=False):
             env = simpy.Environment()
-            maquinas_unicas = df_dados[col_atividade].unique()
-            recursos = {m: simpy.Resource(env, capacity=1) for m in maquinas_unicas}
-            tempos_espera = {m: [] for m in maquinas_unicas}
+            operacoes_unicas = df_dados[col_atividade].unique()
+            
+            # [ATUALIZADO] Usa a capacidade matemática calculada em vez de capacity=1
+            recursos = {op: simpy.Resource(env, capacity=capacidade_operacoes[op]) for op in operacoes_unicas}
+            tempos_espera = {op: [] for op in operacoes_unicas}
             
             def processar_lote(env, nome_lote, operacoes):
                 for _, row in operacoes.iterrows():
@@ -151,10 +166,9 @@ async def simular_what_if(request: Request):
                 
             env.run()
             
-            # NOVO CÁLCULO DE MÉDIA: Separa os lotes com fila dos lotes em fluxo livre
+            # CÁLCULO DE MÉDIA: Separa os lotes com fila dos lotes em fluxo livre
             resultado_filas = {}
             for m, filas in tempos_espera.items():
-                # Filtra apenas as esperas maiores que 3 minutos (0.05 horas) para ignorar micro-paradas
                 filas_reais = [f for f in filas if f > 0.05] 
                 qtd_total = len(filas)
                 qtd_fila = len(filas_reais)
