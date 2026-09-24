@@ -33,25 +33,47 @@ async def analisar_processo(request: Request):
         df = df.replace('NULL', pd.NA)
         df = df.dropna(subset=[col_id, col_atividade, col_tempo_inicio, col_tempo_fim])
         
-        # 2. Forçar Tipagem para Texto (A Correção)
+        # 2. Forçar Tipagem para Texto
         df[col_id] = df[col_id].astype(str)
         df[col_atividade] = df[col_atividade].astype(str)
         
-        # 3. Tratamento de Datas e Cálculo de Processamento
+        # 3. Tratamento de Datas e Achatador (Gaps & Islands) em Python
         df[col_tempo_inicio] = pd.to_datetime(df[col_tempo_inicio], errors='coerce')
         df[col_tempo_fim] = pd.to_datetime(df[col_tempo_fim], errors='coerce')
+        df = df.dropna(subset=[col_tempo_inicio, col_tempo_fim])
+        
+        # Ordenamos perfeitamente a cronologia
+        df = df.sort_values(by=[col_id, col_tempo_inicio])
+        
+        # Criamos uma "ilha" nova sempre que a Operação muda ou o Lote muda
+        mudou_operacao = df[col_atividade] != df[col_atividade].shift()
+        mudou_lote = df[col_id] != df[col_id].shift()
+        df['id_bloco_continuo'] = (mudou_operacao | mudou_lote).cumsum()
+        
+        # Fundimos os apontamentos que pertencem ao mesmo bloco
+        df = df.groupby([col_id, 'id_bloco_continuo', col_atividade], as_index=False).agg({
+            col_tempo_inicio: 'min',
+            col_tempo_fim: 'max'
+        })
+        
+        df = df.sort_values(by=[col_id, col_tempo_fim])
         df['tempo_proc_horas'] = (df[col_tempo_fim] - df[col_tempo_inicio]).dt.total_seconds() / 3600
+        
         tempos_processamento = df.groupby(col_atividade)['tempo_proc_horas'].mean().round(2).to_dict()
 
-        # 4. Process Mining: Mapa de Fluxo
+        # 4. Process Mining: Mapa de Fluxo (Usando tempo_fim para evitar falsas sobreposições)
         df_pm4py = pm4py.format_dataframe(
-            df, case_id=col_id, activity_key=col_atividade, timestamp_key=col_tempo_inicio
+            df, case_id=col_id, activity_key=col_atividade, timestamp_key=col_tempo_fim
         )
         dfg_freq, _, _ = pm4py.discover_dfg(df_pm4py)
         dfg_perf, _, _ = pm4py.discover_performance_dfg(df_pm4py)
         
         transicoes = []
         for (origem, destino), frequencia in dfg_freq.items():
+            # Ignora auto-loops (ex: 5 -> 5) gerados por eventuais micro-paradas dentro da mesma operação
+            if origem == destino:
+                continue
+                
             tempo_raw = dfg_perf.get((origem, destino), 0)
             tempo_segundos = tempo_raw.get('mean', 0) if isinstance(tempo_raw, dict) else tempo_raw
             
@@ -96,38 +118,50 @@ async def simular_what_if(request: Request):
         df[col_id] = df[col_id].astype(str)
         df[col_atividade] = df[col_atividade].astype(str)
         
-        # 2. Datas e Processamento
+        # 2. Datas e Achatador (Gaps & Islands)
         df[col_tempo_inicio] = pd.to_datetime(df[col_tempo_inicio], errors='coerce')
         df[col_tempo_fim] = pd.to_datetime(df[col_tempo_fim], errors='coerce')
+        df = df.dropna(subset=[col_tempo_inicio, col_tempo_fim])
+        
+        df = df.sort_values(by=[col_id, col_tempo_inicio])
+        mudou_operacao = df[col_atividade] != df[col_atividade].shift()
+        mudou_lote = df[col_id] != df[col_id].shift()
+        df['id_bloco_continuo'] = (mudou_operacao | mudou_lote).cumsum()
+        
+        df = df.groupby([col_id, 'id_bloco_continuo', col_atividade], as_index=False).agg({
+            col_tempo_inicio: 'min',
+            col_tempo_fim: 'max'
+        })
+        
+        df = df.sort_values(by=[col_id, col_tempo_fim])
         df['tempo_proc_horas'] = (df[col_tempo_fim] - df[col_tempo_inicio]).dt.total_seconds() / 3600
         df = df.dropna(subset=['tempo_proc_horas', col_tempo_inicio])
         
-        # 3. Mapa de Transições (Para a IA saber de onde a peça vem e para onde vai)
-        df_pm4py = pm4py.format_dataframe(df, case_id=col_id, activity_key=col_atividade, timestamp_key=col_tempo_inicio)
+        # 3. Mapa de Transições para a IA (Usando tempo_fim para corrigir a ordem lógica)
+        df_pm4py = pm4py.format_dataframe(df, case_id=col_id, activity_key=col_atividade, timestamp_key=col_tempo_fim)
         dfg_freq, _, _ = pm4py.discover_dfg(df_pm4py)
         
         cenario_real_transicoes = []
         for (origem, destino), frequencia in dfg_freq.items():
+            if origem == destino:
+                continue
             cenario_real_transicoes.append({
                 "de": str(origem),
                 "para": str(destino),
                 "quantidade_movimentacoes": frequencia
             })
 
-      # 4. SIMPY: Simulador de Filas
+        # 4. SIMPY: Simulador de Filas
         df_simpy = df.sort_values(by=[col_id, col_tempo_inicio])
         lotes_agrupados = df_simpy.groupby(col_id)
         
-        # [NOVO] ALGORITMO DA OPÇÃO 2: Inferir a capacidade real (paralelismo) de cada Operação
+        # Inferir a capacidade real (paralelismo) de cada Operação
         capacidade_operacoes = {}
         for op in df[col_atividade].unique():
             df_op = df[df[col_atividade] == op]
-            # Cria eventos de entrada (+1) e saída (-1) na máquina
             entradas = pd.DataFrame({'tempo': df_op[col_tempo_inicio], 'mudanca': 1})
             saidas = pd.DataFrame({'tempo': df_op[col_tempo_fim], 'mudanca': -1})
-            # Ordena no tempo. Se saída e entrada forem no mesmo segundo, a saída (-1) processa primeiro
             eventos = pd.concat([entradas, saidas]).sort_values(by=['tempo', 'mudanca'])
-            # O pico máximo do somatório nos diz quantas peças chegaram a estar lá ao mesmo tempo
             pico_simultaneo = eventos['mudanca'].cumsum().max()
             capacidade_operacoes[op] = max(1, int(pico_simultaneo))
         
@@ -135,7 +169,6 @@ async def simular_what_if(request: Request):
             env = simpy.Environment()
             operacoes_unicas = df_dados[col_atividade].unique()
             
-            # [ATUALIZADO] Usa a capacidade matemática calculada em vez de capacity=1
             recursos = {op: simpy.Resource(env, capacity=capacidade_operacoes[op]) for op in operacoes_unicas}
             tempos_espera = {op: [] for op in operacoes_unicas}
             
