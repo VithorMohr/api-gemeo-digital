@@ -3,3 +3,4 @@ uvicorn==0.29.0
 pandas
 pm4py
 graphviz
+simpy
