@@ -30,11 +30,12 @@ async def analisar_processo(request: Request):
         # 1. Leitura Robusta: Ignora formatações erradas e limpa crases/espaços
         df = pd.read_csv(StringIO(dados_texto), sep=None, engine='python') 
         df.columns = df.columns.str.replace('`', '').str.strip()
-        
-        # 2. Limpeza de nulos e linhas corrompidas
         df = df.replace('NULL', pd.NA)
         df = df.dropna(subset=[col_id, col_atividade, col_tempo_inicio, col_tempo_fim])
+        
+        # 2. Forçar Tipagem para Texto (A Correção)
         df[col_id] = df[col_id].astype(str)
+        df[col_atividade] = df[col_atividade].astype(str)
         
         # 3. Tratamento de Datas e Cálculo de Processamento
         df[col_tempo_inicio] = pd.to_datetime(df[col_tempo_inicio], errors='coerce')
